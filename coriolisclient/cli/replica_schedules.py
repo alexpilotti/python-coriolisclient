@@ -21,18 +21,18 @@ from cliff import command
 from cliff import lister
 from cliff import show
 
+from oslo_utils import timeutils
+
 from coriolisclient.cli import formatter
 from coriolisclient import exceptions
 
-from oslo_utils import timeutils
 
-
-class Range(argparse.Action):
+class RangeAction(argparse.Action):
     def __init__(self, min=None, max=None, *args, **kwargs):
         self.min = min
         self.max = max
         kwargs["metavar"] = "[%d-%d]" % (self.min, self.max)
-        super(Range, self).__init__(*args, **kwargs)
+        super(RangeAction, self).__init__(*args, **kwargs)
 
     def __call__(self, parser, namespace, value, option_string=None):
         if not (self.min <= value <= self.max):
@@ -92,52 +92,12 @@ class CreateReplicaSchedule(show.ShowOne):
         parser = super(CreateReplicaSchedule, self).get_parser(prog_name)
         parser.add_argument('replica',
                             help='The ID of the replica')
-        parser.add_argument('-M', '--minute',
-                            help='The minute of the hour at which to run',
-                            dest="minute",
-                            type=int,
-                            action=Range,
-                            min=0,
-                            max=59,
-                            default=None)
-        parser.add_argument('-H', '--hour',
-                            help='The hour of the day at which to run. '
-                            'UTC time is required',
-                            dest="hour",
-                            type=int,
-                            min=0,
-                            max=23,
-                            action=Range,
-                            default=None)
-        parser.add_argument('-d', '--day-of-month',
-                            help='The day of the month at which to run',
-                            dest="dom",
-                            type=int,
-                            min=1,
-                            max=31,
-                            action=Range,
-                            default=None)
-        parser.add_argument('-m', '--month',
-                            help='The month in which to run',
-                            dest="month",
-                            type=int,
-                            min=1,
-                            max=12,
-                            action=Range,
-                            default=None)
-        parser.add_argument('-w', '--day-of-week',
-                            help='The day of week in which to run',
-                            dest="dow",
-                            type=int,
-                            min=0,
-                            max=6,
-                            action=Range,
-                            default=None)
+        _add_schedule_group(parser)
         parser.add_argument('--expires-at',
-                            help='ISO8601 formatted date. This is optional',
+                            help='ISO8601 formatted date',
                             default=None)
         parser.add_argument('--disabled',
-                            help='Mark this task as disabled on creation',
+                            help='Mark this schedule as disabled on creation',
                             action='store_true',
                             default=False)
         parser.add_argument('--shutdown-instance',
@@ -147,22 +107,12 @@ class CreateReplicaSchedule(show.ShowOne):
         return parser
 
     def take_action(self, args):
-        parsed_schedule = {}
-        for field in ("minute", "hour", "dom", "month", "dow"):
-            val = getattr(args, field)
-            if val is not None:
-                parsed_schedule[field] = val
-        exp = None
-        if args.expires_at is not None:
-            try:
-                # NOTE(gsamfira): isoformat requires a Z at the end to make
-                # it strict-rfc3339 compliant. The Z (Zulu/Zero offset) denotes
-                # UTC time.
-                exp = "%sZ" % timeutils.normalize_time(
-                    timeutils.parse_isotime(args.expires_at)).isoformat()
-            except Exception as err:
-                raise exceptions.CoriolisException(
-                    "Invalid expiration date: %s" % err)
+        parsed_schedule = _parse_schedule_group_args(args)
+        if not any(parsed_schedule):
+            raise exceptions.CoriolisException(
+                "Please provide at least one value in the Schedule group")
+
+        exp = _parse_expiration_date(args.expires_at)
         schedule = self.app.client_manager.coriolis.replica_schedules.create(
             args.replica, parsed_schedule,
             args.disabled is False, exp, args.shutdown_instance)
@@ -192,47 +142,7 @@ class UpdateReplicaSchedule(show.ShowOne):
         parser = super(UpdateReplicaSchedule, self).get_parser(prog_name)
         parser.add_argument('replica', help='The replica\'s id')
         parser.add_argument('id', help='The replica schedule\'s id')
-        parser.add_argument('-M', '--minute',
-                            help='The minute of the hour at which to run',
-                            dest="minute",
-                            type=int,
-                            action=Range,
-                            min=0,
-                            max=59,
-                            default=None)
-        parser.add_argument('-H', '--hour',
-                            help='The hour of the day at which to run. '
-                            'UTC time is required',
-                            dest="hour",
-                            type=int,
-                            min=0,
-                            max=23,
-                            action=Range,
-                            default=None)
-        parser.add_argument('-d', '--day-of-month',
-                            help='The day of the month at which to run',
-                            dest="dom",
-                            type=int,
-                            min=1,
-                            max=31,
-                            action=Range,
-                            default=None)
-        parser.add_argument('-m', '--month',
-                            help='The month in which to run',
-                            dest="month",
-                            type=int,
-                            min=1,
-                            max=12,
-                            action=Range,
-                            default=None)
-        parser.add_argument('-w', '--day-of-week',
-                            help='The day of week in which to run',
-                            dest="dow",
-                            type=int,
-                            min=0,
-                            max=6,
-                            action=Range,
-                            default=None)
+        _add_schedule_group(parser)
         expires_parser = parser.add_mutually_exclusive_group(required=False)
         expires_parser.add_argument(
             '--expires-at',
@@ -273,25 +183,17 @@ class UpdateReplicaSchedule(show.ShowOne):
 
     def take_action(self, args):
         updated_values = {}
-        parsed_schedule = {}
-        for field in ("minute", "hour", "dom", "month", "dow"):
-            val = getattr(args, field)
-            if val is not None:
-                parsed_schedule[field] = val
+
+        parsed_schedule = _parse_schedule_group_args(args)
         if len(parsed_schedule):
             updated_values["schedule"] = parsed_schedule
+
         if args.expires is not None:
             if args.expires is False:
                 updated_values["expiration_date"] = None
             else:
-                try:
-                    exp = "%sZ" % timeutils.normalize_time(
-                        timeutils.parse_isotime(
-                            args.expires)).isoformat()
-                    updated_values["expiration_date"] = exp
-                except Exception as err:
-                    raise exceptions.CoriolisException(
-                        "Invalid expiration date: %s" % err)
+                exp = _parse_expiration_date(args.expires)
+                updated_values["expiration_date"] = exp
         if args.shutdown is not None:
             updated_values["shutdown_instance"] = args.shutdown
         if args.enabled is not None:
@@ -334,3 +236,67 @@ class ListReplicaSchedule(lister.Lister):
         obj_list = self.app.client_manager.coriolis.replica_schedules.list(
             args.replica, hide_expired=args.hide_expired)
         return ReplicaScheduleFormatter().list_objects(obj_list)
+
+
+def _add_schedule_group(parser):
+    group = parser.add_argument_group('Schedule')
+    group.add_argument('-M', '--minute',
+                       help='The minute of the hour at which to run',
+                       dest="minute",
+                       type=int,
+                       action=RangeAction,
+                       min=0,
+                       max=59,
+                       default=None)
+    group.add_argument('-H', '--hour',
+                       help='The hour of the day at which to run. '
+                       'UTC time is required',
+                       dest="hour",
+                       type=int,
+                       min=0,
+                       max=23,
+                       action=RangeAction,
+                       default=None)
+    group.add_argument('-d', '--day-of-month',
+                       help='The day of the month at which to run',
+                       dest="dom",
+                       type=int,
+                       min=1,
+                       max=31,
+                       action=RangeAction,
+                       default=None)
+    group.add_argument('-m', '--month',
+                       help='The month in which to run',
+                       dest="month",
+                       type=int,
+                       min=1,
+                       max=12,
+                       action=RangeAction,
+                       default=None)
+    group.add_argument('-w', '--day-of-week',
+                       help='The day of week in which to run',
+                       dest="dow",
+                       type=int,
+                       min=0,
+                       max=6,
+                       action=RangeAction,
+                       default=None)
+
+
+def _parse_schedule_group_args(args):
+    parsed_schedule = {}
+    for field in ("minute", "hour", "dom", "month", "dow"):
+        val = getattr(args, field)
+        if val is not None:
+            parsed_schedule[field] = val
+    return parsed_schedule
+
+
+def _parse_expiration_date(value):
+    if value is None:
+        return
+    try:
+        return timeutils.normalize_time(timeutils.parse_isotime(value))
+    except Exception as err:
+        raise exceptions.CoriolisException(
+            "Invalid expiration date: %s" % err)

@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
-
 from six.moves.urllib import parse as urlparse
 
 from coriolisclient import base
@@ -47,18 +45,26 @@ class ReplicaScheduleManager(base.BaseManager):
              "schedule_id": base.getid(schedule)},
             'schedule')
 
-    def create(self, replica, schedule, enabled, expires, shutdown_instance):
+    def create(self, replica, schedule, enabled, expiration_date,
+               shutdown_instance):
         data = {
             "schedule": schedule,
             "enabled": enabled,
             "shutdown_instance": shutdown_instance,
         }
-        if expires:
-            data["expiration_date"] = expires
+        if expiration_date:
+            data["expiration_date"] = self._format_rfc3339_datetime(
+                expiration_date)
         return self._post(
             '/replicas/%s/schedules' % base.getid(replica), data, 'schedule')
 
     def update(self, replica_id, schedule_id, updated_values):
+        expiration_date = updated_values.get("expiration_date")
+        if expiration_date:
+            updated_values = updated_values.copy()
+            updated_values["expiration_date"] = self._format_rfc3339_datetime(
+                expiration_date)
+
         return self._put(
             '/replicas/%(replica_id)s/schedules/%(schedule_id)s' % {
                 "replica_id": base.getid(replica_id),
@@ -70,3 +76,10 @@ class ReplicaScheduleManager(base.BaseManager):
             '/replicas/%(replica_id)s/schedules/%(schedule_id)s' %
             {"replica_id": base.getid(replica),
              "schedule_id": base.getid(schedule)})
+
+    @staticmethod
+    def _format_rfc3339_datetime(dt):
+        # NOTE(gsamfira): isoformat requires a Z at the end to make
+        # it strict-rfc3339 compliant. The Z (Zulu/Zero offset) denotes
+        # UTC time.
+        return "%sZ" % dt.isoformat()
